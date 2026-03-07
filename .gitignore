@@ -1,0 +1,10 @@
+/target
+/pkg
+/www/pkg
+/Cargo.lock
+/node_modules
+/dist
+/.vs
+/.idea
+/.vscode
+.DS_Store
