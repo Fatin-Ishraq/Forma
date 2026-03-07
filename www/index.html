@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="CellForge is an interactive cellular automata sandbox with Conway and Generations rules, ambient viewing mode, theme switching, zoom, and PNG export.">
+    <meta name="theme-color" content="#071118">
+    <meta property="og:title" content="CellForge">
+    <meta property="og:description"
+        content="Interactive cellular automata sandbox with Conway, Generations, ambient mode, themes, zoom, and PNG export.">
+    <meta property="og:type" content="website">
+    <title>CellForge — Cellular Automata Sandbox</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <!-- Onboarding overlay -->
+    <div id="overlay">
+        <span id="overlay-title">CELLFORGE</span>
+        <span id="overlay-sub">cellular automata sandbox</span>
+    </div>
+
+    <!-- Main canvas -->
+    <canvas id="canvas"></canvas>
+    <button id="btn-exit-view" class="btn" title="Exit presentation view">EXIT</button>
+    <div id="mobile-sheet-backdrop"></div>
+
+    <div id="mobile-bar" class="panel">
+        <button id="btn-mobile-tools" class="btn">TOOLS</button>
+        <button id="btn-mobile-rules" class="btn">RULES</button>
+        <button id="btn-mobile-play" class="btn accent">⏸</button>
+        <button id="btn-mobile-controls" class="btn">CTRL</button>
+        <button id="btn-mobile-more" class="btn">MORE</button>
+    </div>
+
+    <!-- Top Bar -->
+    <div id="top-bar" class="panel">
+        <div class="panel-section">
+            <button id="btn-about" class="btn" title="About and shortcuts">ABOUT</button>
+            <button id="btn-ambient" class="btn" title="Toggle ambient mode (A)">AMBIENT</button>
+            <button id="btn-theme" class="btn" title="Cycle visual theme (D)">THEME: LAB</button>
+            <button id="btn-present" class="btn" title="Toggle presentation mode">PRESENT</button>
+            <button id="btn-export" class="btn" title="Export grid as PNG">EXPORT PNG</button>
+            <button id="btn-random-rule" class="btn accent" title="Randomize rules and grid">⚡ RANDOM RULE</button>
+        </div>
+    </div>
+
+    <div id="zoom-panel" class="panel">
+        <label class="panel-label">ZOOM <span id="zoom-val">1.00x</span></label>
+        <div class="mode-toggle" id="zoom-controls">
+            <button id="btn-zoom-out" class="mode-btn" title="Zoom out">-</button>
+            <button id="btn-zoom-reset" class="mode-btn" title="Reset zoom">1x</button>
+            <button id="btn-zoom-in" class="mode-btn" title="Zoom in">+</button>
+        </div>
+    </div>
+
+    <!-- Left Panel — Tools -->
+    <div id="left-panel" class="panel">
+        <div class="panel-header">TOOLS</div>
+
+        <label class="panel-label">MODE</label>
+        <div class="mode-toggle" id="mode-toggle">
+            <button class="mode-btn active" data-mode="0">CONWAY</button>
+            <button class="mode-btn" data-mode="1">GENERATIONS</button>
+        </div>
+
+        <label class="panel-label">BRUSH SIZE <span id="brush-size-val">4</span>px</label>
+        <input type="range" id="brush-size" min="1" max="64" value="4">
+
+        <label class="panel-label">BRUSH SHAPE</label>
+        <div class="mode-toggle" id="brush-shape-toggle">
+            <button class="mode-btn active" data-shape="square">SQ</button>
+            <button class="mode-btn" data-shape="circle">●</button>
+            <button class="mode-btn" data-shape="spray">⁘</button>
+        </div>
+
+        <div id="touch-mode-section" class="mobile-only">
+            <label class="panel-label">TOUCH MODE</label>
+            <div class="mode-toggle" id="touch-mode-toggle">
+                <button id="btn-touch-paint" class="mode-btn active" type="button">PAINT</button>
+                <button id="btn-touch-erase" class="mode-btn" type="button">ERASE</button>
+            </div>
+        </div>
+
+        <div id="paint-state-section" style="display:none">
+            <label class="panel-label">PAINT STATE <span id="paint-state-val">1</span></label>
+            <input type="range" id="paint-state" min="0" max="20" value="1">
+        </div>
+    </div>
+
+    <!-- Right Panel — Rules -->
+    <div id="right-panel" class="panel">
+        <div class="panel-header">RULES</div>
+
+        <!-- Conway rules -->
+        <div id="conway-rules" class="rules-section" style="display:none">
+            <label class="panel-label">PRESET</label>
+            <select id="conway-preset">
+                <option value="life">Conway's Life (B3/S23)</option>
+                <option value="highlife">HighLife (B36/S23)</option>
+                <option value="daynight">Day & Night (B3678/S34678)</option>
+                <option value="seeds">Seeds (B2/S)</option>
+                <option value="maze">Maze (B3/S12345)</option>
+                <option value="replicator">Replicator (B1357/S1357)</option>
+                <option value="34life">34 Life (B34/S34)</option>
+            </select>
+
+            <label class="panel-label">BIRTH (neighbors)</label>
+            <div class="checkbox-row" id="birth-row"></div>
+
+            <label class="panel-label">SURVIVAL (neighbors)</label>
+            <div class="checkbox-row" id="survival-row"></div>
+        </div>
+
+        <!-- Generations rules -->
+        <div id="generations-rules" class="rules-section" style="display:none">
+            <label class="panel-label">PRESET</label>
+            <select id="gen-preset">
+                <option value="brians">Brian's Brain (B2/S/3)</option>
+                <option value="starwars">Star Wars (B2/S345/4)</option>
+                <option value="fireworld">Fireworld (B2/S34/8)</option>
+            </select>
+
+            <label class="panel-label">BIRTH (neighbors)</label>
+            <div class="checkbox-row" id="gen-birth-row"></div>
+
+            <label class="panel-label">SURVIVAL (neighbors)</label>
+            <div class="checkbox-row" id="gen-survival-row"></div>
+
+            <label class="panel-label">STATES <span id="gen-states-val">3</span></label>
+            <input type="range" id="gen-states" min="2" max="20" value="3">
+        </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div id="bottom-bar" class="panel">
+        <div class="panel-section controls">
+            <button id="btn-play" class="btn accent" title="Play/Pause simulation">▶ PLAY</button>
+            <button id="btn-step" class="btn" title="Advance one step">⏭ STEP</button>
+            <button id="btn-clear" class="btn" title="Clear all cells">CLEAR</button>
+            <button id="btn-randomize" class="btn" title="Randomize grid">RANDOM</button>
+        </div>
+        <div class="panel-section">
+            <label class="panel-label">SPEED <span id="speed-val">30</span> t/s</label>
+            <input type="range" id="speed" min="1" max="60" value="30">
+        </div>
+        <div class="panel-section stats">
+            <span class="stat">POP <span id="stat-pop" class="stat-val">0</span></span>
+            <span class="stat">GEN <span id="stat-gen" class="stat-val">0</span></span>
+            <span class="stat">FPS <span id="stat-fps" class="stat-val">0</span></span>
+        </div>
+    </div>
+
+    <div id="theme-badge" aria-live="polite"></div>
+
+    <div id="about-modal" aria-hidden="true">
+        <div id="about-backdrop"></div>
+        <section id="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
+            <div class="about-top">
+                <div>
+                    <div class="about-kicker">ABOUT CELLFORGE</div>
+                    <h2 id="about-title">Cellular automata sandbox</h2>
+                </div>
+                <button id="btn-about-close" class="btn" title="Close about panel">CLOSE</button>
+            </div>
+
+            <div class="about-grid">
+                <section class="about-section">
+                    <h3>What this is</h3>
+                    <p>CellForge is a browser sandbox for exploring emergent behavior on a 1024x1024 grid. Paint cells, change rules, export stills, and switch visual themes to turn the same simulation into very different atmospheres.</p>
+                </section>
+
+                <section class="about-section">
+                    <h3>Modes</h3>
+                    <p><strong>Conway</strong>: classic life-like automata using birth and survival masks such as <code>B3/S23</code>.</p>
+                    <p><strong>Generations</strong>: living cells age through multiple states, leaving structured trails and pulses.</p>
+                    <p><strong>Ambient</strong>: a calmer viewing mode with a curated seed, slow speed, hidden UI, and gentle camera drift.</p>
+                </section>
+
+                <section class="about-section">
+                    <h3>Controls</h3>
+                    <p><strong>Left drag</strong>: paint</p>
+                    <p><strong>Right drag</strong>: erase</p>
+                    <p><strong>Space + drag</strong>: pan</p>
+                    <p><strong>Wheel</strong>: zoom</p>
+                    <p><strong>Touch</strong>: one finger paints, two fingers pan and pinch to zoom</p>
+                    <p><strong>Zoom buttons</strong>: step in, out, or reset</p>
+                </section>
+
+                <section class="about-section">
+                    <h3>Shortcuts</h3>
+                    <p><strong>A</strong>: toggle ambient mode</p>
+                    <p><strong>D</strong>: cycle theme</p>
+                    <p><strong>F</strong>: toggle presentation mode</p>
+                    <p><strong>+</strong> / <strong>-</strong>: zoom in or out</p>
+                    <p><strong>0</strong>: reset zoom</p>
+                    <p><strong>?</strong>: open About</p>
+                    <p><strong>Esc</strong>: close About</p>
+                </section>
+            </div>
+        </section>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+
+</html>
