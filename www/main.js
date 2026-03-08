@@ -102,6 +102,13 @@ const GEN_PRESETS = {
     brians: { b: (1 << 2), s: 0, states: 3, speed: 22 },
     starwars: { b: (1 << 2), s: (1 << 3) | (1 << 4) | (1 << 5), states: 4, speed: 18 },
     fireworld: { b: (1 << 2), s: (1 << 3) | (1 << 4), states: 8, speed: 14 },
+    pulse: { b: (1 << 2), s: 0, states: 4, speed: 20 },
+    dune: { b: (1 << 2), s: (1 << 2) | (1 << 3), states: 6, speed: 16 },
+    tides: { b: (1 << 2), s: (1 << 3) | (1 << 4) | (1 << 6), states: 8, speed: 14 },
+    frost: { b: (1 << 2), s: (1 << 1) | (1 << 2) | (1 << 5), states: 9, speed: 12 },
+    lattice: { b: (1 << 3) | (1 << 4), s: (1 << 2) | (1 << 3) | (1 << 4), states: 6, speed: 16 },
+    echo: { b: (1 << 2), s: (1 << 2) | (1 << 4), states: 10, speed: 12 },
+    cathedral: { b: (1 << 2), s: (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4), states: 16, speed: 8 },
 };
 
 const THEMES = [
@@ -837,6 +844,12 @@ function applyGenPreset(name) {
     buildCheckboxRow(document.getElementById('gen-survival-row'), 'gs', p.s);
     document.getElementById('gen-states').value = p.states;
     document.getElementById('gen-states-val').textContent = p.states;
+    document.getElementById('paint-state').max = p.states - 1;
+    if (paintState >= p.states) {
+        paintState = p.states - 1;
+        document.getElementById('paint-state').value = paintState;
+        document.getElementById('paint-state-val').textContent = paintState;
+    }
 }
 
 function applyPresetScene(mode, name) {
