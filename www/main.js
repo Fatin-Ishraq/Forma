@@ -22,6 +22,7 @@ let gridH = 1024;
 let playing = true;
 let speed = 30; // ticks per second
 const MAX_SPEED = 240;
+const SPEED_SLIDER_MAX = 100;
 let tickAccumulator = 0;
 let lastFrameTime = 0;
 let needsUpload = true; // dirty flag: only upload pixels when something changed
@@ -583,11 +584,23 @@ function clampSpeed(value) {
     return Math.max(1, Math.min(MAX_SPEED, value | 0));
 }
 
+function speedFromSlider(sliderValue) {
+    const t = Math.max(0, Math.min(SPEED_SLIDER_MAX, sliderValue | 0)) / SPEED_SLIDER_MAX;
+    const mapped = Math.exp(Math.log(MAX_SPEED) * t);
+    return clampSpeed(Math.round(mapped));
+}
+
+function sliderFromSpeed(speedValue) {
+    const s = clampSpeed(speedValue);
+    const t = Math.log(s) / Math.log(MAX_SPEED);
+    return Math.max(0, Math.min(SPEED_SLIDER_MAX, Math.round(t * SPEED_SLIDER_MAX)));
+}
+
 function setSpeed(value, syncSlider = true) {
     speed = clampSpeed(value);
     if (syncSlider) {
         const speedSlider = document.getElementById('speed');
-        if (speedSlider) speedSlider.value = speed;
+        if (speedSlider) speedSlider.value = sliderFromSpeed(speed);
     }
     const speedVal = document.getElementById('speed-val');
     if (speedVal) speedVal.textContent = speed;
@@ -1099,7 +1112,7 @@ function wireUI() {
     const speedSlider = document.getElementById('speed');
     speedSlider.addEventListener('input', () => {
         disableAmbientMode();
-        setSpeed(parseInt(speedSlider.value), true);
+        setSpeed(speedFromSlider(parseInt(speedSlider.value)), false);
     });
 
     // Export PNG
