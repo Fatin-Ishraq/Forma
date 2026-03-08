@@ -5,6 +5,7 @@ const W: usize = 1024;
 const H: usize = 1024;
 const TOTAL: usize = W * H;
 const THEME_COUNT: usize = 4;
+const MAX_STATES: usize = 20;
 const AGING_STOP_POINTS: [f32; 4] = [0.0, 0.33, 0.66, 1.0];
 const CONWAY_DEAD: [[u8; 4]; THEME_COUNT] = [
     [5, 5, 16, 255],
@@ -82,6 +83,15 @@ fn palette_generations(theme: usize, state: u8, max_states: u8) -> [u8; 4] {
     stops[stops.len() - 1]
 }
 
+fn build_generations_palette(theme: usize, max_states: u8) -> [[u8; 4]; MAX_STATES + 1] {
+    let mut lut = [[0u8; 4]; MAX_STATES + 1];
+    let clamped_states = max_states.clamp(2, MAX_STATES as u8);
+    for (state, color) in lut.iter_mut().enumerate() {
+        *color = palette_generations(theme, state as u8, clamped_states);
+    }
+    lut
+}
+
 // ── Simulation struct ──────────────────────────────────────────────────────
 #[wasm_bindgen]
 pub struct Simulation {
@@ -101,6 +111,7 @@ pub struct Simulation {
     survival_mask: u32, // bitmask: bit i = survive when i neighbors
     num_states: u8,     // for Generations mode (2-20)
     theme: u8,          // visual theme palette
+    generations_palette: [[u8; 4]; MAX_STATES + 1],
 
     // Precomputed wrap tables to avoid branchy edge math in hot loops.
     x_prev: Vec<usize>,
@@ -148,6 +159,7 @@ impl Simulation {
             survival_mask: (1 << 2) | (1 << 3), // S23
             num_states: 2,
             theme: 0,
+            generations_palette: build_generations_palette(0, 2),
 
             x_prev,
             x_next,
@@ -159,8 +171,14 @@ impl Simulation {
         }
     }
 
+    #[inline]
+    fn refresh_generations_palette(&mut self) {
+        let theme = (self.theme as usize).min(THEME_COUNT - 1);
+        self.generations_palette = build_generations_palette(theme, self.num_states);
+    }
+
     // ── Core tick ──────────────────────────────────────────────────────────
-    pub fn tick(&mut self, steps: u32) {
+    fn advance_steps(&mut self, steps: u32) {
         for _ in 0..steps {
             match self.rule_mode {
                 0 => self.tick_conway(),
@@ -169,14 +187,26 @@ impl Simulation {
             }
             self.generation += 1;
         }
+    }
+
+    pub fn tick(&mut self, steps: u32) {
+        self.advance_steps(steps);
+        self.render_pixels();
+    }
+
+    pub fn tick_no_render(&mut self, steps: u32) {
+        self.advance_steps(steps);
+    }
+
+    pub fn refresh_pixels(&mut self) {
         self.render_pixels();
     }
 
     fn tick_conway(&mut self) {
         let (cur, nxt) = if self.use_a {
-            (&self.cells_a as &Vec<u8>, &mut self.cells_b)
+            (&self.cells_a, &mut self.cells_b)
         } else {
-            (&self.cells_b as &Vec<u8>, &mut self.cells_a)
+            (&self.cells_b, &mut self.cells_a)
         };
 
         let x_prev = &self.x_prev;
@@ -224,9 +254,9 @@ impl Simulation {
 
     fn tick_generations(&mut self) {
         let (cur, nxt) = if self.use_a {
-            (&self.cells_a as &Vec<u8>, &mut self.cells_b)
+            (&self.cells_a, &mut self.cells_b)
         } else {
-            (&self.cells_b as &Vec<u8>, &mut self.cells_a)
+            (&self.cells_b, &mut self.cells_a)
         };
 
         let ns = self.num_states;
@@ -306,9 +336,8 @@ impl Simulation {
             }
             1 => {
                 let cells = if self.use_a { &self.cells_a } else { &self.cells_b };
-                let ns = self.num_states;
                 for (px, &state) in self.pixels.chunks_exact_mut(4).zip(cells.iter()) {
-                    let c = palette_generations(theme, state, ns);
+                    let c = self.generations_palette[state as usize];
                     px[0] = c[0];
                     px[1] = c[1];
                     px[2] = c[2];
@@ -365,12 +394,13 @@ impl Simulation {
     }
 
     pub fn set_generations(&mut self, n: u8) {
-        self.num_states = n.max(2);
+        self.num_states = n.clamp(2, MAX_STATES as u8);
+        self.refresh_generations_palette();
     }
 
     pub fn set_theme(&mut self, theme: u8) {
         self.theme = theme % THEME_COUNT as u8;
-        self.render_pixels();
+        self.refresh_generations_palette();
     }
 
     pub fn get_theme(&self) -> u8 {
@@ -382,7 +412,6 @@ impl Simulation {
         self.cells_b.fill(0);
         self.population = 0;
         self.generation = 0;
-        self.render_pixels();
     }
 
     pub fn randomize(&mut self, density: f32) {
@@ -395,7 +424,6 @@ impl Simulation {
             let r = ((seed >> 33) as f32) / (u32::MAX as f32 / 2.0);
             *cell = if r < density { 1 } else { 0 };
         }
-        self.render_pixels();
     }
 
     pub fn randomize_with_seed(&mut self, density: f32, seed_val: u32) {
@@ -407,7 +435,6 @@ impl Simulation {
             let r = ((seed >> 33) as f32) / (u32::MAX as f32 / 2.0);
             *cell = if r < density { 1 } else { 0 };
         }
-        self.render_pixels();
     }
 
     pub fn get_population(&self) -> u32 {

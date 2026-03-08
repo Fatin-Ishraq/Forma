@@ -20,7 +20,6 @@ const GRID_W = 1024, GRID_H = 1024;
 // Simulation state
 let playing = true;
 let speed = 30; // ticks per second
-const MAX_SPEED = 240;
 let tickAccumulator = 0;
 let lastFrameTime = 0;
 let needsUpload = true; // dirty flag: only upload pixels when something changed
@@ -43,8 +42,6 @@ let bloomStrength = 0.35;
 let ambientMode = false;
 let ambientStartTime = 0;
 let ambientLastReseedAt = 0;
-let ambientNextMotionAt = 0;
-let ambientNextHealthCheckAt = 0;
 let mobileUI = false;
 let mobileSheet = null;
 let mobileEraseMode = false;
@@ -52,8 +49,6 @@ let touchMode = 'none';
 let touchPrevDistance = 0;
 let touchPrevCenterX = 0;
 let touchPrevCenterY = 0;
-let loopTimerId = 0;
-let renderResolution = 1024;
 
 // FPS tracking
 const fpsSamples = new Array(60).fill(16.67);
@@ -75,10 +70,12 @@ let bloomEnabled = false; // disabled by default for perf
 let bloomSupported = true;
 let bloomFBOs = [];
 let bloomProgram = null;
+let combineProgram = null;
 
 // Cached uniform locations
 let u_program = {};
 let u_bloom = {};
+let u_combine = {};
 
 // Cached WASM pixel view (re-created only when memory/pointer changes).
 let wasmPixelsView = null;
@@ -115,9 +112,6 @@ const AMBIENT_SCENES = [
     { mode: 0, preset: 'highlife', theme: 0, density: 0.08, seed: 7331, speed: 8, zoom: 1.25 },
     { mode: 1, preset: 'starwars', theme: 3, density: 0.06, seed: 1887, speed: 7, zoom: 1.4 },
 ];
-const AMBIENT_MOTION_INTERVAL_MS = 66;
-const AMBIENT_HEALTH_INTERVAL_MS = 1000;
-const IDLE_FRAME_DELAY_MS = 180;
 
 // ═══════════════════════════════════════════════════════════════════════
 // WebGL Setup
@@ -165,6 +159,20 @@ void main() {
     fragColor = vec4(result, 1.0);
 }`;
 
+const COMBINE_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_scene;
+uniform sampler2D u_bloom;
+uniform float u_strength;
+void main() {
+    vec2 uv = fract(v_uv);
+    vec3 scene = texture(u_scene, uv).rgb;
+    vec3 bloom = texture(u_bloom, uv).rgb;
+    fragColor = vec4(scene + bloom * u_strength, 1.0);
+}`;
+
 // Simple passthrough vertex for bloom
 const BLOOM_VERT = `#version 300 es
 in vec2 a_pos;
@@ -199,28 +207,10 @@ function createProgram(vSrc, fSrc) {
     return p;
 }
 
-function applyRenderResolution() {
-    if (!canvas || !gl) return;
-    canvas.width = renderResolution;
-    canvas.height = renderResolution;
-    setupBloomFBOs();
-    needsRender = true;
-}
-
-function updateResolutionUI() {
-    const btn = document.getElementById('btn-resolution');
-    if (!btn) return;
-    btn.textContent = `RES: ${renderResolution}`;
-}
-
-function toggleRenderResolution() {
-    renderResolution = renderResolution === 1024 ? 512 : 1024;
-    updateResolutionUI();
-    applyRenderResolution();
-}
-
 function initWebGL() {
     canvas = document.getElementById('canvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
 
     gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
     if (!gl) {
@@ -233,6 +223,7 @@ function initWebGL() {
 
     // Bloom program
     bloomProgram = createProgram(BLOOM_VERT, BLOOM_FRAG);
+    combineProgram = createProgram(BLOOM_VERT, COMBINE_FRAG);
 
     // Fullscreen quad
     const quadVerts = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
@@ -243,7 +234,7 @@ function initWebGL() {
     gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
 
     // Set up attribute for all programs
-    for (const prog of [program, bloomProgram]) {
+    for (const prog of [program, bloomProgram, combineProgram]) {
         const loc = gl.getAttribLocation(prog, 'a_pos');
         if (loc >= 0) {
             gl.enableVertexAttribArray(loc);
@@ -261,10 +252,12 @@ function initWebGL() {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, GRID_W, GRID_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
     // Bloom FBOs (2 ping-pong at half resolution)
-    applyRenderResolution();
+    setupBloomFBOs();
 
     window.addEventListener('resize', () => {
-        applyRenderResolution();
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        setupBloomFBOs();
         needsRender = true;
     });
     // Cache uniform locations
@@ -278,6 +271,11 @@ function initWebGL() {
         u_tex: gl.getUniformLocation(bloomProgram, 'u_tex'),
         u_dir: gl.getUniformLocation(bloomProgram, 'u_dir'),
         u_texSize: gl.getUniformLocation(bloomProgram, 'u_texSize'),
+    };
+    u_combine = {
+        u_scene: gl.getUniformLocation(combineProgram, 'u_scene'),
+        u_bloom: gl.getUniformLocation(combineProgram, 'u_bloom'),
+        u_strength: gl.getUniformLocation(combineProgram, 'u_strength'),
     };
 
     return true;
@@ -325,7 +323,6 @@ function setupBloomFBOs() {
 // ═══════════════════════════════════════════════════════════════════════
 
 function uploadPixels() {
-    sim.refresh_pixels();
     const ptr = sim.get_pixels_ptr();
     const len = sim.get_pixels_len();
     const buf = wasmMemory.memory.buffer;
@@ -372,9 +369,19 @@ function render() {
         gl.uniform2f(u_bloom.u_dir, 0.0, 1.0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        // Pass 4: Draw scene to screen
+        // Pass 4: Combine scene + bloom → screen
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, cw, ch);
+        gl.useProgram(combineProgram);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(u_combine.u_scene, 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, bloomFBOs[0].tex);
+        gl.uniform1i(u_combine.u_bloom, 1);
+        gl.uniform1f(u_combine.u_strength, bloomStrength);
+
+        // Draw using the main program with pan/zoom
         drawScene();
 
         // Additive bloom overlay
@@ -415,11 +422,9 @@ function drawScene() {
 // ═══════════════════════════════════════════════════════════════════════
 
 function screenToGrid(sx, sy) {
-    const displayWidth = canvas.clientWidth || window.innerWidth;
-    const displayHeight = canvas.clientHeight || window.innerHeight;
     // Convert screen pixel to normalized device coords
-    const ndcX = (sx / displayWidth) * 2 - 1;
-    const ndcY = 1 - (sy / displayHeight) * 2;
+    const ndcX = (sx / canvas.width) * 2 - 1;
+    const ndcY = 1 - (sy / canvas.height) * 2;
 
     // Reverse pan+zoom to get UV
     const uvX = ndcX / zoom + viewX;
@@ -468,14 +473,9 @@ function updateMobileEraseUI() {
     eraseBtn.classList.toggle('active', mobileEraseMode);
 }
 
-function setZoom(nextZoom, updateUi = true) {
-    const normalized = normalizeZoom(nextZoom);
-    if (Math.abs(normalized - zoom) < 0.0001) {
-        if (updateUi) updateZoomUI();
-        return;
-    }
-    zoom = normalized;
-    if (updateUi) updateZoomUI();
+function setZoom(nextZoom) {
+    zoom = normalizeZoom(nextZoom);
+    updateZoomUI();
     needsRender = true;
 }
 
@@ -487,21 +487,6 @@ function resetView() {
     viewX = 0;
     viewY = 0;
     setZoom(1);
-}
-
-function scheduleNextFrame(delayMs = 0) {
-    if (loopTimerId) {
-        clearTimeout(loopTimerId);
-        loopTimerId = 0;
-    }
-    if (delayMs <= 0) {
-        requestAnimationFrame(gameLoop);
-        return;
-    }
-    loopTimerId = setTimeout(() => {
-        loopTimerId = 0;
-        requestAnimationFrame(gameLoop);
-    }, delayMs);
 }
 
 function closeMobileSheets() {
@@ -533,20 +518,6 @@ function setMobileUI(enabled) {
     if (!enabled) {
         closeMobileSheets();
     }
-}
-
-function clampSpeed(value) {
-    return Math.max(1, Math.min(MAX_SPEED, value | 0));
-}
-
-function setSpeed(value, syncSlider = true) {
-    speed = clampSpeed(value);
-    if (syncSlider) {
-        const speedSlider = document.getElementById('speed');
-        if (speedSlider) speedSlider.value = speed;
-    }
-    const speedVal = document.getElementById('speed-val');
-    if (speedVal) speedVal.textContent = speed;
 }
 
 function updateAmbientUI() {
@@ -642,9 +613,11 @@ function applyAmbientScene() {
     applyPresetScene(scene.mode, scene.preset);
     applyTheme(scene.theme, false);
     resetView();
-    setZoom(scene.zoom, false);
+    setZoom(scene.zoom);
     sim.randomize_with_seed(scene.density, scene.seed + Math.floor(performance.now()));
-    setSpeed(scene.speed, true);
+    speed = scene.speed;
+    document.getElementById('speed').value = speed;
+    document.getElementById('speed-val').textContent = speed;
     needsUpload = true;
     needsRender = true;
     statsDirty = true;
@@ -655,10 +628,7 @@ function disableAmbientMode() {
     ambientMode = false;
     ambientStartTime = 0;
     ambientLastReseedAt = 0;
-    ambientNextMotionAt = 0;
-    ambientNextHealthCheckAt = 0;
     updateAmbientUI();
-    updateZoomUI();
     setPresentationMode(false);
 }
 
@@ -667,8 +637,6 @@ function setAmbientMode(enabled) {
         ambientMode = true;
         ambientStartTime = performance.now();
         ambientLastReseedAt = ambientStartTime;
-        ambientNextMotionAt = ambientStartTime;
-        ambientNextHealthCheckAt = ambientStartTime;
         updateAmbientUI();
         setAboutOpen(false);
         applyAmbientScene();
@@ -806,8 +774,9 @@ function applyPresetScene(mode, name) {
     const preset = mode === 0 ? CONWAY_PRESETS[name] : GEN_PRESETS[name];
     if (!preset) return;
     sim.clear();
-    // Keep user-selected speed when changing rules/presets.
-    setSpeed(speed, true);
+    speed = preset.speed;
+    document.getElementById('speed').value = speed;
+    document.getElementById('speed-val').textContent = speed;
     needsUpload = true;
     needsRender = true;
     statsDirty = true;
@@ -900,7 +869,6 @@ function wireUI() {
     // Playback
     const btnPlay = document.getElementById('btn-play');
     const btnAmbient = document.getElementById('btn-ambient');
-    const btnResolution = document.getElementById('btn-resolution');
     const btnPresent = document.getElementById('btn-present');
     const btnTheme = document.getElementById('btn-theme');
     const btnExitView = document.getElementById('btn-exit-view');
@@ -973,12 +941,6 @@ function wireUI() {
         setAmbientMode(!ambientMode);
     });
 
-    btnResolution.addEventListener('click', () => {
-        disableAmbientMode();
-        closeMobileSheets();
-        toggleRenderResolution();
-    });
-
     btnPresent.addEventListener('click', () => {
         if (ambientMode) {
             disableAmbientMode();
@@ -1027,7 +989,7 @@ function wireUI() {
     document.getElementById('btn-step').addEventListener('click', () => {
         disableAmbientMode();
         closeMobileSheets();
-        sim.tick_no_render(1);
+        sim.tick(1);
         needsUpload = true;
         needsRender = true;
         statsDirty = true;
@@ -1056,7 +1018,8 @@ function wireUI() {
     const speedSlider = document.getElementById('speed');
     speedSlider.addEventListener('input', () => {
         disableAmbientMode();
-        setSpeed(parseInt(speedSlider.value), true);
+        speed = parseInt(speedSlider.value);
+        document.getElementById('speed-val').textContent = speed;
     });
 
     // Export PNG
@@ -1127,10 +1090,8 @@ function setupInput() {
 
         if (isMiddleDown || (isLeftDown && isSpaceDown)) {
             // Pan
-            const displayWidth = canvas.clientWidth || window.innerWidth;
-            const displayHeight = canvas.clientHeight || window.innerHeight;
-            const dx = (e.clientX - lastMouseX) / displayWidth * 2 / zoom;
-            const dy = -(e.clientY - lastMouseY) / displayHeight * 2 / zoom;
+            const dx = (e.clientX - lastMouseX) / canvas.width * 2 / zoom;
+            const dy = -(e.clientY - lastMouseY) / canvas.height * 2 / zoom;
             viewX -= dx;
             viewY -= dy;
             needsRender = true;
@@ -1193,10 +1154,8 @@ function setupInput() {
             const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
             const dx = centerX - touchPrevCenterX;
             const dy = centerY - touchPrevCenterY;
-            const displayWidth = canvas.clientWidth || window.innerWidth;
-            const displayHeight = canvas.clientHeight || window.innerHeight;
-            viewX -= dx / displayWidth * 2 / zoom;
-            viewY += dy / displayHeight * 2 / zoom;
+            viewX -= dx / canvas.width * 2 / zoom;
+            viewY += dy / canvas.height * 2 / zoom;
             if (touchPrevDistance > 0) {
                 setZoom(zoom * (distance / touchPrevDistance));
             }
@@ -1305,6 +1264,8 @@ function updateStats() {
 // ═══════════════════════════════════════════════════════════════════════
 
 function gameLoop(timestamp) {
+    requestAnimationFrame(gameLoop);
+
     // FPS tracking
     const dt = timestamp - lastFrameTime;
     lastFrameTime = timestamp;
@@ -1318,26 +1279,18 @@ function gameLoop(timestamp) {
         document.getElementById('stat-fps').textContent = Math.round(1000 / avgDt);
     }
 
-    if (ambientMode && timestamp >= ambientNextMotionAt) {
+    if (ambientMode) {
         const ambientT = (timestamp - ambientStartTime) * 0.0001;
-        const nextX = Math.sin(ambientT * 0.9) * 0.18;
-        const nextY = Math.cos(ambientT * 0.7) * 0.14;
-        if (Math.abs(nextX - viewX) > 0.0001 || Math.abs(nextY - viewY) > 0.0001) {
-            viewX = nextX;
-            viewY = nextY;
-            needsRender = true;
-        }
-        setZoom(1.35 + Math.sin(ambientT * 0.45) * 0.16, false);
-        ambientNextMotionAt = timestamp + AMBIENT_MOTION_INTERVAL_MS;
-    }
+        viewX = Math.sin(ambientT * 0.9) * 0.18;
+        viewY = Math.cos(ambientT * 0.7) * 0.14;
+        setZoom(1.35 + Math.sin(ambientT * 0.45) * 0.16);
+        needsRender = true;
 
-    if (ambientMode && timestamp >= ambientNextHealthCheckAt) {
         const pop = sim.get_population();
         if ((timestamp - ambientLastReseedAt > 28000) && (pop < 250 || pop > 720000)) {
             applyAmbientScene();
             ambientLastReseedAt = timestamp;
         }
-        ambientNextHealthCheckAt = timestamp + AMBIENT_HEALTH_INTERVAL_MS;
     }
 
     // Simulation ticks
@@ -1350,7 +1303,7 @@ function gameLoop(timestamp) {
         tickAccumulator -= ticksThisFrame;
 
         if (ticksThisFrame > 0) {
-            sim.tick_no_render(ticksThisFrame);
+            sim.tick(ticksThisFrame);
             needsUpload = true;
             needsRender = true;
             statsDirty = true;
@@ -1373,16 +1326,6 @@ function gameLoop(timestamp) {
         updateStats();
         statsDirty = false;
     }
-
-    const activeInput = isLeftDown || isRightDown || isMiddleDown || isSpaceDown || touchMode !== 'none';
-    const canIdle =
-        !playing &&
-        !ambientMode &&
-        !needsUpload &&
-        !needsRender &&
-        !statsDirty &&
-        !activeInput;
-    scheduleNextFrame(canIdle ? IDLE_FRAME_DELAY_MS : 0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1397,7 +1340,6 @@ async function main() {
 
     if (!initWebGL()) return;
     applyTheme(0, false);
-    updateResolutionUI();
     updateZoomUI();
 
     // Start in Conway mode
@@ -1435,7 +1377,7 @@ async function main() {
     playing = true;
     updatePlaybackUI();
     lastFrameTime = performance.now();
-    scheduleNextFrame(0);
+    requestAnimationFrame(gameLoop);
 }
 
 main().catch(console.error);
