@@ -57,6 +57,19 @@ let touchPrevCenterY = 0;
 let loopTimerId = 0;
 const RENDER_RESOLUTION = 1024;
 let simResolution = 1024;
+const GRID_TIERS = [384, 512, 640, 768, 896, 1024, 1280];
+const RES_STORAGE_MODE_KEY = 'forma_sim_res_mode';
+const RES_STORAGE_VALUE_KEY = 'forma_sim_res_value';
+let resolutionMode = 'auto';
+let autoTargetResolution = 1024;
+let adaptiveLowFpsMs = 0;
+let adaptiveHighFpsMs = 0;
+let adaptiveCooldownUntil = 0;
+const ADAPTIVE_LOW_FPS = 46;
+const ADAPTIVE_HIGH_FPS = 58;
+const ADAPTIVE_LOW_WINDOW_MS = 6500;
+const ADAPTIVE_HIGH_WINDOW_MS = 22000;
+const ADAPTIVE_COOLDOWN_MS = 12000;
 
 // FPS tracking
 const fpsSamples = new Array(60).fill(16.67);
@@ -219,7 +232,8 @@ function applyRenderResolution() {
 function updateResolutionUI() {
     const btn = document.getElementById('btn-resolution');
     if (!btn) return;
-    btn.textContent = `RES: ${simResolution}`;
+    const mode = resolutionMode === 'manual' ? 'MANUAL' : 'AUTO';
+    btn.textContent = `RES: ${simResolution} (${mode})`;
 }
 
 function resetPixelCache() {
@@ -241,27 +255,132 @@ function reallocateSimulationTexture() {
     resetPixelCache();
 }
 
-function toggleSimulationResolution() {
-    const nextSize = simResolution === 1024 ? 512 : 1024;
-    sim.set_grid_size(nextSize, nextSize);
+function safeReadStorage(key) {
+    try {
+        return window.localStorage.getItem(key);
+    } catch (_) {
+        return null;
+    }
+}
+
+function safeWriteStorage(key, value) {
+    try {
+        window.localStorage.setItem(key, value);
+    } catch (_) {}
+}
+
+function clampToTier(size) {
+    let closest = GRID_TIERS[0];
+    let bestDist = Math.abs(size - closest);
+    for (let i = 1; i < GRID_TIERS.length; i++) {
+        const candidate = GRID_TIERS[i];
+        const dist = Math.abs(size - candidate);
+        if (dist < bestDist) {
+            closest = candidate;
+            bestDist = dist;
+        }
+    }
+    return closest;
+}
+
+function tierIndex(size) {
+    return GRID_TIERS.indexOf(clampToTier(size));
+}
+
+function detectAutoTargetResolution() {
+    const cores = Number(navigator.hardwareConcurrency || 0);
+    const memory = Number(navigator.deviceMemory || 0);
+    const dpr = Math.min(Number(window.devicePixelRatio || 1), 2);
+    const viewport = Math.max(window.innerWidth || 0, window.innerHeight || 0) * dpr;
+    const ua = navigator.userAgent || '';
+    const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+
+    let target = clampToTier(Math.max(512, Math.min(1280, Math.round(viewport))));
+    let penalty = 0;
+    if (memory > 0 && memory <= 4) penalty += 2;
+    else if (memory > 0 && memory <= 6) penalty += 1;
+    if (cores > 0 && cores <= 4) penalty += 2;
+    else if (cores > 0 && cores <= 6) penalty += 1;
+    if (isMobileUA) penalty += 1;
+
+    let idx = tierIndex(target) - penalty;
+    if (idx < 0) idx = 0;
+    if (idx >= GRID_TIERS.length) idx = GRID_TIERS.length - 1;
+    autoTargetResolution = GRID_TIERS[idx];
+    return autoTargetResolution;
+}
+
+function applySimulationResolution(nextSize, reseed = true) {
+    const size = clampToTier(nextSize);
+    sim.set_grid_size(size, size);
     syncGridDimensions();
     reallocateSimulationTexture();
-    sim.randomize_with_seed(0.11, Math.floor(Math.random() * 0xFFFFFFFF));
+    if (reseed) {
+        sim.randomize_with_seed(0.11, Math.floor(Math.random() * 0xFFFFFFFF));
+    }
+    adaptiveLowFpsMs = 0;
+    adaptiveHighFpsMs = 0;
+    adaptiveCooldownUntil = performance.now() + ADAPTIVE_COOLDOWN_MS;
     updateResolutionUI();
     needsUpload = true;
     needsRender = true;
     statsDirty = true;
 }
 
-function shouldUseLowEndResolution() {
-    const cores = Number(navigator.hardwareConcurrency || 0);
-    const memory = Number(navigator.deviceMemory || 0);
-    const ua = navigator.userAgent || '';
-    const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-    if (memory > 0 && memory <= 4) return true;
-    if (cores > 0 && cores <= 4) return true;
-    if (isMobileUA && (memory <= 6 || cores <= 6)) return true;
-    return false;
+function persistResolutionPrefs() {
+    safeWriteStorage(RES_STORAGE_MODE_KEY, resolutionMode);
+    safeWriteStorage(RES_STORAGE_VALUE_KEY, String(simResolution));
+}
+
+function setResolutionModeAuto() {
+    resolutionMode = 'auto';
+    persistResolutionPrefs();
+    applySimulationResolution(detectAutoTargetResolution(), true);
+}
+
+function toggleSimulationResolution() {
+    if (resolutionMode === 'auto') {
+        resolutionMode = 'manual';
+        const manual = simResolution <= 512 ? 1024 : 512;
+        persistResolutionPrefs();
+        applySimulationResolution(manual, true);
+        return;
+    }
+    if (simResolution <= 512) {
+        resolutionMode = 'manual';
+        persistResolutionPrefs();
+        applySimulationResolution(1024, true);
+        return;
+    }
+    setResolutionModeAuto();
+}
+
+function applyAdaptiveResolution(dt, fps) {
+    if (resolutionMode !== 'auto') return;
+    const now = performance.now();
+    if (now < adaptiveCooldownUntil) return;
+
+    const idx = tierIndex(simResolution);
+    if (fps < ADAPTIVE_LOW_FPS && idx > 0) {
+        adaptiveLowFpsMs += dt;
+        adaptiveHighFpsMs = 0;
+        if (adaptiveLowFpsMs >= ADAPTIVE_LOW_WINDOW_MS) {
+            applySimulationResolution(GRID_TIERS[idx - 1], true);
+        }
+        return;
+    }
+
+    if (fps > ADAPTIVE_HIGH_FPS && idx < tierIndex(autoTargetResolution)) {
+        adaptiveHighFpsMs += dt;
+        adaptiveLowFpsMs = 0;
+        if (adaptiveHighFpsMs >= ADAPTIVE_HIGH_WINDOW_MS) {
+            applySimulationResolution(GRID_TIERS[idx + 1], true);
+        }
+        return;
+    }
+
+    adaptiveLowFpsMs = 0;
+    adaptiveHighFpsMs = 0;
 }
 
 function initWebGL() {
@@ -1346,6 +1465,10 @@ function setupInput() {
 
     window.addEventListener('resize', () => {
         setMobileUI(window.innerWidth <= 760);
+        detectAutoTargetResolution();
+        if (resolutionMode === 'auto' && simResolution !== autoTargetResolution) {
+            applySimulationResolution(autoTargetResolution, true);
+        }
     });
 }
 
@@ -1371,10 +1494,12 @@ function gameLoop(timestamp) {
     fpsSum += dt - previous;
     fpsIndex = (fpsIndex + 1) % fpsSamples.length;
 
+    const avgDt = fpsSum / fpsSamples.length;
+    const avgFps = 1000 / avgDt;
     if (fpsIndex % 10 === 0) {
-        const avgDt = fpsSum / fpsSamples.length;
-        document.getElementById('stat-fps').textContent = Math.round(1000 / avgDt);
+        document.getElementById('stat-fps').textContent = Math.round(avgFps);
     }
+    applyAdaptiveResolution(dt, avgFps);
 
     if (ambientMode && timestamp >= ambientNextMotionAt) {
         const ambientT = (timestamp - ambientStartTime) * 0.0001;
@@ -1453,8 +1578,17 @@ async function main() {
 
     sim = new Simulation();
     syncGridDimensions();
-    if (shouldUseLowEndResolution()) {
-        sim.set_grid_size(512, 512);
+
+    const savedMode = safeReadStorage(RES_STORAGE_MODE_KEY);
+    const savedValue = Number(safeReadStorage(RES_STORAGE_VALUE_KEY) || 0);
+    detectAutoTargetResolution();
+    if (savedMode === 'manual' && Number.isFinite(savedValue) && savedValue > 0) {
+        resolutionMode = 'manual';
+        sim.set_grid_size(clampToTier(savedValue), clampToTier(savedValue));
+        syncGridDimensions();
+    } else {
+        resolutionMode = 'auto';
+        sim.set_grid_size(autoTargetResolution, autoTargetResolution);
         syncGridDimensions();
     }
 
