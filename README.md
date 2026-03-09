@@ -1,44 +1,54 @@
 # Forma
 
-**Forma is a Windows desktop wallpaper engine built around real-time cellular automata.**
+Realtime cellular automata as a native Windows wallpaper.
 
-It runs as a real app (installer + tray + startup support), can attach behind desktop icons, and provides a control window for tuning simulation settings.
+[![Release](https://img.shields.io/github/v/release/Fatin-Ishraq/Forma)](https://github.com/Fatin-Ishraq/Forma/releases/latest)
+[![Pages](https://github.com/Fatin-Ishraq/Forma/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/Fatin-Ishraq/Forma/actions/workflows/deploy-pages.yml)
+[![Live Demo](https://img.shields.io/badge/demo-live-2ea44f)](https://fatin-ishraq.github.io/Forma/)
 
-## Download
-
-- Latest release page: https://github.com/Fatin-Ishraq/Forma/releases/latest
-- Direct Windows installer (`.exe`): https://github.com/Fatin-Ishraq/Forma/releases/download/v0.1.0/FormaWallpaper-Setup-0.1.0.exe
-
-## Demo
-
-- Live web demo: https://fatin-ishraq.github.io/Forma/
+Forma is a Windows desktop wallpaper engine built around a Rust + WebAssembly simulation core.  
+It can run behind desktop icons through WorkerW embedding, exposes a controls window, and supports tray-first operation (toggle wallpaper, startup, diagnostics, updates).
 
 ## Preview
 
-![Forma running live](www/forma-live.png)
+![Forma running live](www/forma-preview.gif)
 
-## Windows-First Features
+## Quick Start (Windows)
 
-- Native Windows app with installer/uninstaller
-- Tray app workflow (`Wallpaper Enabled`, `Open Controls Window`, `Launch at Startup`)
-- WorkerW wallpaper embedding with clean fallback mode
-- Persistent app settings in `%APPDATA%/Forma/config.json`
-- Startup integration via HKCU Run
-- Logging + diagnostics export for support/recovery
-- Recovery handling for sleep/resume and Explorer host changes
+1. Download the latest installer: <https://github.com/Fatin-Ishraq/Forma/releases/latest>
+2. Run the `FormaWallpaper-Setup-*.exe` installer from release assets.
+3. Launch Forma from Start menu.
+4. Use the tray icon to toggle `Wallpaper Active` and open `Control Window`.
+5. Adjust mode/rules/theme/performance and click `SET WALLPAPER`.
 
-## User Flow (Windows)
+## Live Demo
 
-1. Download and run `FormaWallpaper-Setup-0.1.0.exe`
-2. Launch Forma (or enable launch at startup)
-3. Use tray menu to toggle wallpaper mode
-4. Open controls window to adjust mode/rules/theme/speed
-5. Click `SET WALLPAPER` to apply settings to wallpaper runtime
+Try the browser build: <https://fatin-ishraq.github.io/Forma/>
+
+## Feature Highlights
+
+- Native Windows desktop app with installer/uninstaller.
+- WorkerW wallpaper attach with fallback to normal window mode if attach fails.
+- Real-time CA engine (Conway + Generations) compiled to WASM.
+- Presets for both families (`Life`, `HighLife`, `Brian's Brain`, `StarWars`, etc.).
+- Tray controls for resolution, FPS cap, theme, interaction profile, startup, diagnostics.
+- Automatic recovery handling for Explorer host resets and suspend/resume.
+- Persistent settings in `%APPDATA%/Forma/config.json`.
+- Structured logs in `%LOCALAPPDATA%/Forma/logs`.
+
+## Controls At A Glance
+
+- Rule modes: `Conway`, `Generations`
+- Themes: `Lab`, `Ember`, `Bio`, `Mono`
+- Tray resolutions: `512`, `768`, `1024`
+- Tray FPS caps: `30`, `60`, `120`
+- Interaction profiles: `Subtle`, `Balanced`, `Expressive`
+- Generations states: `2..20`
 
 ## Requirements
 
 - Windows 10/11 (x64)
-- Microsoft Edge WebView2 Runtime (usually already present on modern Windows)
+- Microsoft Edge WebView2 Runtime (normally preinstalled on modern Windows)
 
 ## Build From Source
 
@@ -48,13 +58,13 @@ It runs as a real app (installer + tray + startup support), can attach behind de
 - `wasm-pack`
 - Inno Setup 6 (`ISCC.exe`) for installer builds
 
-### 1) Build web assets
+### 1) Build WASM package
 
 ```bash
 wasm-pack build --target web --out-dir www/pkg
 ```
 
-### 2) Run desktop app
+### 2) Run desktop host
 
 ```bash
 cargo run --manifest-path desktop/forma-wallpaper/Cargo.toml
@@ -78,21 +88,34 @@ powershell -ExecutionPolicy Bypass -File desktop/forma-wallpaper/scripts/build-i
 powershell -ExecutionPolicy Bypass -File desktop/forma-wallpaper/scripts/release-checksum.ps1
 ```
 
+## Troubleshooting
+
+- Wallpaper not attaching:
+  Toggle `Wallpaper Active` from tray once, then reopen controls.
+- Explorer restarted / desktop changed:
+  Forma auto-rebinds the wallpaper host, but tray-toggle can force a clean reattach.
+- Need support data:
+  Use tray `Export Diagnostics...` and share the generated file.
+
 ## Project Layout
 
 ```text
 .
 ├── src/                                  # Rust simulation core (WASM)
-├── www/                                  # Shared web/control UI
-├── desktop/forma-wallpaper/              # Windows desktop host app
-│   ├── src/windows_app/                  # host, tray, wallpaper embedding, startup, logs
+├── www/                                  # Web UI + control surface
+├── desktop/forma-wallpaper/              # Native Windows host app
+│   ├── src/windows_app/                  # tray, startup, logging, wallpaper host, IPC
 │   ├── installer/FormaWallpaper.iss      # Inno Setup script
-│   └── scripts/                          # build/release helper scripts
+│   └── scripts/                          # release/build helpers
 └── README.md
 ```
 
-## Notes
+## Contributing
 
-- If wallpaper attach fails, Forma automatically falls back to normal window mode.
-- User config is intentionally preserved across upgrade/uninstall.
-- Logs are written to `%LOCALAPPDATA%/Forma/logs`.
+- Open an issue for bugs, crashes, or performance regressions.
+- For UI/behavior changes, include before/after screenshots or a short clip.
+- For desktop host fixes, include relevant logs from `%LOCALAPPDATA%/Forma/logs`.
+
+## License
+
+No license file is currently included in this repository.
